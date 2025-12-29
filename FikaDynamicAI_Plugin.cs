@@ -35,6 +35,14 @@ internal class FikaDynamicAI_Plugin : BaseUnityPlugin
         }
     }
 
+    internal static void BotTypeFilter_SettingChanged(object sender, EventArgs e)
+    {
+        if (FikaDynamicAIManager.Instance != null)
+        {
+            FikaDynamicAIManager.Instance.RefreshBotTracking();
+        }
+    }
+
     protected void Awake()
     {
         PluginLogger = Logger;
@@ -67,6 +75,16 @@ internal class FikaDynamicAI_Plugin : BaseUnityPlugin
             new ConfigDescription("Whether Dynamic AI should affect Sniper Scavs (marksman)."));
         AffectFollowers = Config.Bind(botTypesHeader, "Affect Followers", true,
             new ConfigDescription("Whether Dynamic AI should affect Boss followers/guards."));
+
+        // Subscribe to setting changes for live updates
+        AffectScavs.SettingChanged += BotTypeFilter_SettingChanged;
+        AffectPMCs.SettingChanged += BotTypeFilter_SettingChanged;
+        AffectRogues.SettingChanged += BotTypeFilter_SettingChanged;
+        AffectRaiders.SettingChanged += BotTypeFilter_SettingChanged;
+        AffectCultists.SettingChanged += BotTypeFilter_SettingChanged;
+        AffectBosses.SettingChanged += BotTypeFilter_SettingChanged;
+        AffectSnipers.SettingChanged += BotTypeFilter_SettingChanged;
+        AffectFollowers.SettingChanged += BotTypeFilter_SettingChanged;
 
         new BotsController_SetSettings_Postfix().Enable();
         new BotsEventsController_SpawnAction_Postfix().Enable();

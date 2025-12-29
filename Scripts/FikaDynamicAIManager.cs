@@ -323,6 +323,56 @@ public class FikaDynamicAIManager : MonoBehaviour
         }
     }
 
+    internal void RefreshBotTracking()
+    {
+        IBotGame botGame = Singleton<IBotGame>.Instance;
+        if (botGame?.BotsController?.Bots?.BotOwners == null)
+        {
+            return;
+        }
+
+        // Iterate over all bots currently in the game
+        // We iterate backwards or use a copy if we were modifying the source collection, 
+        // but here we modify our local _bots list, so iterating the source is fine.
+        foreach (var botOwner in botGame.BotsController.Bots.BotOwners)
+        {
+            if (botOwner == null || botOwner.IsYourPlayer || !botOwner.IsAI)
+            {
+                continue;
+            }
+
+            FikaBot fikaBot = botOwner.GetPlayer as FikaBot;
+            if (fikaBot == null)
+            {
+                continue;
+            }
+
+            bool shouldTrack = ShouldTrackBot(botOwner);
+            bool isTracked = _bots.Contains(fikaBot);
+
+            if (shouldTrack && !isTracked)
+            {
+                // New bot type enabled - Start tracking it
+                _bots.Add(fikaBot);
+#if DEBUG
+                _logger.LogWarning($"[Refresh] Started tracking {fikaBot.name} ({botOwner.Profile.Info.Settings.Role})");
+#endif
+            }
+            else if (!shouldTrack && isTracked)
+            {
+                // Bot type disabled - Stop tracking it
+                if (_disabledBots.Contains(fikaBot))
+                {
+                    ActivateBot(fikaBot);
+                }
+                _bots.Remove(fikaBot);
+#if DEBUG
+                _logger.LogWarning($"[Refresh] Stopped tracking {fikaBot.name} ({botOwner.Profile.Info.Settings.Role})");
+#endif
+            }
+        }
+    }
+
     internal void RateChanged(FikaDynamicAI_Plugin.EDynamicAIRates value)
     {
         _resetCounter = value switch
