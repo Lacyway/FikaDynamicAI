@@ -16,6 +16,8 @@ internal class FikaDynamicAI_Plugin : BaseUnityPlugin
     // General Settings
     public static ConfigEntry<float> DynamicAIRange { get; set; }
     public static ConfigEntry<EDynamicAIRates> DynamicAIRate { get; set; }
+    public static ConfigEntry<bool> UseMapSpecificDistances { get; set; }
+    public static ConfigEntry<bool> ShowDebugInfo { get; set; }
 
     // Bot Type Filters - which types WILL be affected by Dynamic AI
     public static ConfigEntry<bool> AffectScavs { get; set; }
@@ -77,10 +79,14 @@ internal class FikaDynamicAI_Plugin : BaseUnityPlugin
 
         // General Settings
         DynamicAIRange = Config.Bind(generalHeader, "Dynamic AI Range", 100f,
-            new ConfigDescription("The range at which AI will be disabled if no player is within said range.",
+            new ConfigDescription("The global fallback range at which AI will be disabled.\n- Used if 'Use Map Specific Distances' is FALSE.\n- Used if the current map has no specific config defined.",
             new AcceptableValueRange<float>(50f, 1000f)));
         DynamicAIRate = Config.Bind(generalHeader, "Dynamic AI Rate", EDynamicAIRates.Medium,
-            new ConfigDescription("How often DynamicAI should scan for the range from all players."));
+            new ConfigDescription("How often DynamicAI checks bot distances.\nActs as a multiplier for the Smart LOD system (Low = slower checks, High = faster checks)."));
+        UseMapSpecificDistances = Config.Bind(generalHeader, "Use Map Specific Distances", true,
+            new ConfigDescription("If TRUE, the mod uses the custom ranges defined in '4. Map Distances'.\nIf FALSE, it ignores map settings and uses 'Dynamic AI Range' for all maps."));
+        ShowDebugInfo = Config.Bind(generalHeader, "Show Debug Info", false,
+            new ConfigDescription("If enabled, shows real-time logs in the BepInEx console:\n- Distance to player\n- Current update interval (Smart LOD)\nUseful for testing performance."));
 
         // Bot Type Filters
         AffectScavs = Config.Bind(botTypesHeader, "Affect Scavs", true,

@@ -211,6 +211,14 @@ public class FikaDynamicAIManager : MonoBehaviour
 
              // Add small jitter to prevent clumping
             _botNextCheckTime[botId] = time + interval + UnityEngine.Random.Range(0f, 0.1f);
+
+            if (FikaDynamicAI_Plugin.ShowDebugInfo.Value)
+            {
+                // To avoid spam, maybe only log when interval changes? 
+                // For now, let's just log everything for VERIFICATION purposes as requested.
+                // We'll limit it to one bot per frame to avoid freezing console? No, user wants data.
+                _logger.LogInfo($"[DEBUG] Bot {botId} Dist: {Mathf.Sqrt(distanceSqr):F1}m -> Interval: {interval:F2}s");
+            }
         }
     }
 
@@ -312,6 +320,12 @@ public class FikaDynamicAIManager : MonoBehaviour
 
     private float GetRangeForCurrentMap()
     {
+        // If map specific distances are disabled, return the global range
+        if (!FikaDynamicAI_Plugin.UseMapSpecificDistances.Value)
+        {
+            return FikaDynamicAI_Plugin.DynamicAIRange.Value;
+        }
+
         // Use cached config if available, otherwise default to global fallback
         return _currentMapRangeConfig?.Value ?? FikaDynamicAI_Plugin.DynamicAIRange.Value;
     }
