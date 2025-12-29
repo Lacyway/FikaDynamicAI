@@ -1,4 +1,5 @@
 ﻿using BepInEx.Logging;
+using BepInEx.Configuration;
 using Comfort.Common;
 using EFT;
 using Fika.Core;
@@ -22,6 +23,10 @@ public class FikaDynamicAIManager : MonoBehaviour
     private readonly List<FikaBot> _bots = [];
     private readonly HashSet<FikaBot> _disabledBots = [];
     private BotSpawner _spawner;
+    
+    // Cached config entries for the current map
+    private ConfigEntry<bool> _currentMapEnabledConfig;
+    private ConfigEntry<float> _currentMapRangeConfig;
 
     protected void Awake()
     {
@@ -37,6 +42,10 @@ public class FikaDynamicAIManager : MonoBehaviour
             Destroy(this);
             return;
         }
+
+        // Cache the config entries for the current map ONCE.
+        // This avoids string allocations and switch logic in the Update loop.
+        SetupMapConfigs();
 
         _resetCounter = FikaDynamicAI_Plugin.DynamicAIRate.Value switch
         {
@@ -66,12 +75,71 @@ public class FikaDynamicAIManager : MonoBehaviour
         FikaDynamicAI_Plugin.DynamicAIRate.SettingChanged += FikaDynamicAI_Plugin.DynamicAIRate_SettingChanged;
     }
 
+    private void SetupMapConfigs()
+    {
+        string locationId = Singleton<GameWorld>.Instance.LocationId.ToLower();
+
+        switch (locationId)
+        {
+            case "factory4_day":
+            case "factory4_night":
+                _currentMapEnabledConfig = FikaDynamicAI_Plugin.EnableFactory;
+                _currentMapRangeConfig = FikaDynamicAI_Plugin.RangeFactory;
+                break;
+            case "bigmap":
+                _currentMapEnabledConfig = FikaDynamicAI_Plugin.EnableCustoms;
+                _currentMapRangeConfig = FikaDynamicAI_Plugin.RangeCustoms;
+                break;
+            case "woods":
+                _currentMapEnabledConfig = FikaDynamicAI_Plugin.EnableWoods;
+                _currentMapRangeConfig = FikaDynamicAI_Plugin.RangeWoods;
+                break;
+            case "shoreline":
+                _currentMapEnabledConfig = FikaDynamicAI_Plugin.EnableShoreline;
+                _currentMapRangeConfig = FikaDynamicAI_Plugin.RangeShoreline;
+                break;
+            case "interchange":
+                _currentMapEnabledConfig = FikaDynamicAI_Plugin.EnableInterchange;
+                _currentMapRangeConfig = FikaDynamicAI_Plugin.RangeInterchange;
+                break;
+            case "rezervbase":
+                _currentMapEnabledConfig = FikaDynamicAI_Plugin.EnableReserve;
+                _currentMapRangeConfig = FikaDynamicAI_Plugin.RangeReserve;
+                break;
+            case "lighthouse":
+                _currentMapEnabledConfig = FikaDynamicAI_Plugin.EnableLighthouse;
+                _currentMapRangeConfig = FikaDynamicAI_Plugin.RangeLighthouse;
+                break;
+            case "tarkovstreets":
+                _currentMapEnabledConfig = FikaDynamicAI_Plugin.EnableStreets;
+                _currentMapRangeConfig = FikaDynamicAI_Plugin.RangeStreets;
+                break;
+            case "sandbox":
+                _currentMapEnabledConfig = FikaDynamicAI_Plugin.EnableGroundZero;
+                _currentMapRangeConfig = FikaDynamicAI_Plugin.RangeGroundZero;
+                break;
+            case "laboratory":
+                _currentMapEnabledConfig = FikaDynamicAI_Plugin.EnableLabs;
+                _currentMapRangeConfig = FikaDynamicAI_Plugin.RangeLabs;
+                break;
+            default:
+                // Fallback for modded maps - use generic configs if we had them, 
+                // or just rely on the fallback logic. Here we null them to indicate fallback?
+                // Or better: Use generic Fallback entries if we create them. 
+                // For now, let's just use null and handle it.
+                _currentMapEnabledConfig = null;
+                _currentMapRangeConfig = null;
+                break;
+        }
+    }
+
     internal void DestroyComponent()
     {
         FikaDynamicAI_Plugin.DynamicAIRate.SettingChanged -= FikaDynamicAI_Plugin.DynamicAIRate_SettingChanged;
         Instance = null;
         Destroy(this);
     }
+
 
     private void Spawner_OnBotRemoved(BotOwner botOwner)
     {
@@ -203,23 +271,14 @@ public class FikaDynamicAIManager : MonoBehaviour
 
     private bool IsMapEnabled()
     {
-        // Get current map ID (lowercase for simpler matching)
-        string locationId = Singleton<GameWorld>.Instance.LocationId.ToLower();
+        // Use cached config if available, otherwise default to true for modded maps
+        return _currentMapEnabledConfig?.Value ?? true;
+    }
 
-        return locationId switch
-        {
-            "factory4_day" or "factory4_night" => FikaDynamicAI_Plugin.EnableFactory.Value,
-            "bigmap" => FikaDynamicAI_Plugin.EnableCustoms.Value,
-            "woods" => FikaDynamicAI_Plugin.EnableWoods.Value,
-            "shoreline" => FikaDynamicAI_Plugin.EnableShoreline.Value,
-            "interchange" => FikaDynamicAI_Plugin.EnableInterchange.Value,
-            "rezervbase" => FikaDynamicAI_Plugin.EnableReserve.Value,
-            "lighthouse" => FikaDynamicAI_Plugin.EnableLighthouse.Value,
-            "tarkovstreets" => FikaDynamicAI_Plugin.EnableStreets.Value,
-            "sandbox" => FikaDynamicAI_Plugin.EnableGroundZero.Value,
-            "laboratory" => FikaDynamicAI_Plugin.EnableLabs.Value,
-            _ => true // Default to enabled for modded/unknown maps
-        };
+    private float GetRangeForCurrentMap()
+    {
+        // Use cached config if available, otherwise default to global fallback
+        return _currentMapRangeConfig?.Value ?? FikaDynamicAI_Plugin.DynamicAIRange.Value;
     }
 
     public void AddHumans()
@@ -340,25 +399,7 @@ public class FikaDynamicAIManager : MonoBehaviour
         }
     }
 
-    private float GetRangeForCurrentMap()
-    {
-        string locationId = Singleton<GameWorld>.Instance.LocationId.ToLower();
 
-        return locationId switch
-        {
-            "factory4_day" or "factory4_night" => FikaDynamicAI_Plugin.RangeFactory.Value,
-            "bigmap" => FikaDynamicAI_Plugin.RangeCustoms.Value,
-            "woods" => FikaDynamicAI_Plugin.RangeWoods.Value,
-            "shoreline" => FikaDynamicAI_Plugin.RangeShoreline.Value,
-            "interchange" => FikaDynamicAI_Plugin.RangeInterchange.Value,
-            "rezervbase" => FikaDynamicAI_Plugin.RangeReserve.Value,
-            "lighthouse" => FikaDynamicAI_Plugin.RangeLighthouse.Value,
-            "tarkovstreets" => FikaDynamicAI_Plugin.RangeStreets.Value,
-            "sandbox" => FikaDynamicAI_Plugin.RangeGroundZero.Value,
-            "laboratory" => FikaDynamicAI_Plugin.RangeLabs.Value,
-            _ => FikaDynamicAI_Plugin.DynamicAIRange.Value
-        };
-    }
 
     public void EnabledChange(bool value)
     {
