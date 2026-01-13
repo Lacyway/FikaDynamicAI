@@ -1,4 +1,5 @@
 ﻿using BepInEx.Logging;
+using BepInEx.Configuration;
 using Comfort.Common;
 using EFT;
 using Fika.Core;
@@ -16,12 +17,15 @@ public class FikaDynamicAIManager : MonoBehaviour
 
     private readonly ManualLogSource _logger = BepInEx.Logging.Logger.CreateLogSource("DynamicAI");
     private CoopHandler _coopHandler;
-    private int _frameCounter;
-    private int _resetCounter;
+    private float _rateMultiplier = 1.0f;
     private readonly List<FikaPlayer> _humanPlayers = [];
     private readonly List<FikaBot> _bots = [];
     private readonly HashSet<FikaBot> _disabledBots = [];
     private BotSpawner _spawner;
+    
+    // Cached config entries for the current map
+    private ConfigEntry<bool> _currentMapEnabledConfig;
+    private ConfigEntry<float> _currentMapRangeConfig;
 
     protected void Awake()
     {
@@ -38,13 +42,12 @@ public class FikaDynamicAIManager : MonoBehaviour
             return;
         }
 
-        _resetCounter = FikaDynamicAI_Plugin.DynamicAIRate.Value switch
-        {
-            FikaDynamicAI_Plugin.EDynamicAIRates.Low => 600,
-            FikaDynamicAI_Plugin.EDynamicAIRates.Medium => 300,
-            FikaDynamicAI_Plugin.EDynamicAIRates.High => 120,
-            _ => 300,
-        };
+        // Cache the config entries for the current map ONCE.
+        // This avoids string allocations and switch logic in the Update loop.
+        SetupMapConfigs();
+
+        // Initialize multiplier
+        RateChanged(FikaDynamicAI_Plugin.DynamicAIRate.Value);
 
         _spawner = Singleton<IBotGame>.Instance.BotsController.BotSpawner;
         if (_spawner == null)
@@ -66,6 +69,64 @@ public class FikaDynamicAIManager : MonoBehaviour
         FikaDynamicAI_Plugin.DynamicAIRate.SettingChanged += FikaDynamicAI_Plugin.DynamicAIRate_SettingChanged;
     }
 
+    private void SetupMapConfigs()
+    {
+        string locationId = Singleton<GameWorld>.Instance.LocationId.ToLower();
+
+        switch (locationId)
+        {
+            case "factory4_day":
+            case "factory4_night":
+                _currentMapEnabledConfig = FikaDynamicAI_Plugin.EnableFactory;
+                _currentMapRangeConfig = FikaDynamicAI_Plugin.RangeFactory;
+                break;
+            case "bigmap":
+                _currentMapEnabledConfig = FikaDynamicAI_Plugin.EnableCustoms;
+                _currentMapRangeConfig = FikaDynamicAI_Plugin.RangeCustoms;
+                break;
+            case "woods":
+                _currentMapEnabledConfig = FikaDynamicAI_Plugin.EnableWoods;
+                _currentMapRangeConfig = FikaDynamicAI_Plugin.RangeWoods;
+                break;
+            case "shoreline":
+                _currentMapEnabledConfig = FikaDynamicAI_Plugin.EnableShoreline;
+                _currentMapRangeConfig = FikaDynamicAI_Plugin.RangeShoreline;
+                break;
+            case "interchange":
+                _currentMapEnabledConfig = FikaDynamicAI_Plugin.EnableInterchange;
+                _currentMapRangeConfig = FikaDynamicAI_Plugin.RangeInterchange;
+                break;
+            case "rezervbase":
+                _currentMapEnabledConfig = FikaDynamicAI_Plugin.EnableReserve;
+                _currentMapRangeConfig = FikaDynamicAI_Plugin.RangeReserve;
+                break;
+            case "lighthouse":
+                _currentMapEnabledConfig = FikaDynamicAI_Plugin.EnableLighthouse;
+                _currentMapRangeConfig = FikaDynamicAI_Plugin.RangeLighthouse;
+                break;
+            case "tarkovstreets":
+                _currentMapEnabledConfig = FikaDynamicAI_Plugin.EnableStreets;
+                _currentMapRangeConfig = FikaDynamicAI_Plugin.RangeStreets;
+                break;
+            case "sandbox":
+                _currentMapEnabledConfig = FikaDynamicAI_Plugin.EnableGroundZero;
+                _currentMapRangeConfig = FikaDynamicAI_Plugin.RangeGroundZero;
+                break;
+            case "laboratory":
+                _currentMapEnabledConfig = FikaDynamicAI_Plugin.EnableLabs;
+                _currentMapRangeConfig = FikaDynamicAI_Plugin.RangeLabs;
+                break;
+            default:
+                // Fallback for modded maps - use generic configs if we had them, 
+                // or just rely on the fallback logic. Here we null them to indicate fallback?
+                // Or better: Use generic Fallback entries if we create them. 
+                // For now, let's just use null and handle it.
+                _currentMapEnabledConfig = null;
+                _currentMapRangeConfig = null;
+                break;
+        }
+    }
+
     internal void DestroyComponent()
     {
         FikaDynamicAI_Plugin.DynamicAIRate.SettingChanged -= FikaDynamicAI_Plugin.DynamicAIRate_SettingChanged;
@@ -73,17 +134,91 @@ public class FikaDynamicAIManager : MonoBehaviour
         Destroy(this);
     }
 
-    private void Spawner_OnBotRemoved(BotOwner botOwner)
+
+    // Track when each bot should be checked next. Key: Bot InstanceID
+    private readonly Dictionary<int, float> _botNextCheckTime = [];
+
+    protected void Update()
     {
-        FikaBot bot = (FikaBot)botOwner.GetPlayer;
-        if (!_bots.Remove(bot))
+        // If map is disabled via config, ensure all bots are active and do nothing else
+        if (!IsMapEnabled())
         {
-            _logger.LogWarning($"Could not remove {botOwner.gameObject.name} from bots list.");
+            if (_disabledBots.Count > 0)
+            {
+                EnabledChange(false); // Activates all disabled bots
+            }
+            return;
         }
 
-        if (_disabledBots.Contains(bot))
+        float time = Time.time;
+        float currentMapRange = GetRangeForCurrentMap();
+        float currentMapRangeSqr = currentMapRange * currentMapRange;
+
+        // Iterate backwards so we can safely handle potential removals if needed,
+        // though we generally modify _bots in event handlers. Use for-loop for performance.
+        for (int i = _bots.Count - 1; i >= 0; i--)
         {
-            _disabledBots.Remove(bot);
+            FikaBot bot = _bots[i];
+            
+            if (bot == null) 
+            {
+                _bots.RemoveAt(i);
+                continue;
+            }
+
+            int botId = bot.Id;
+            // Initialize check time if new
+            if (!_botNextCheckTime.TryGetValue(botId, out float nextCheck))
+            {
+                nextCheck = time + UnityEngine.Random.Range(0f, 0.5f); // Initial jitter to stagger
+                _botNextCheckTime[botId] = nextCheck;
+            }
+
+            if (time < nextCheck)
+            {
+                continue;
+            }
+
+            // Perform check
+            float distanceSqr = CheckForPlayers(bot, currentMapRangeSqr);
+
+            // Determine next check interval based on distance
+            // "Smart LOD": Far bots update less frequently
+            // Distances are Squared! 
+            // 400m^2 = 160,000
+            // 150m^2 = 22,500
+            
+            float interval;
+            if (distanceSqr > 250000) // > 500m
+            {
+                interval = 3.0f;
+            }
+            else if (distanceSqr > 40000) // > 200m
+            {
+                interval = 1.0f;
+            }
+            else if (distanceSqr > 4900) // > 70m
+            {
+                interval = 0.5f;
+            }
+            else // < 70m (Very close)
+            {
+                interval = 0.25f;
+            }
+
+            // Apply global rate multiplier
+            interval *= _rateMultiplier;
+
+             // Add small jitter to prevent clumping
+            _botNextCheckTime[botId] = time + interval + UnityEngine.Random.Range(0f, 0.1f);
+
+            if (FikaDynamicAI_Plugin.ShowDebugInfo.Value)
+            {
+                // To avoid spam, maybe only log when interval changes? 
+                // For now, let's just log everything for VERIFICATION purposes as requested.
+                // We'll limit it to one bot per frame to avoid freezing console? No, user wants data.
+                _logger.LogInfo($"[DEBUG] Bot {botId} Dist: {Mathf.Sqrt(distanceSqr):F1}m -> Interval: {interval:F2}s");
+            }
         }
     }
 
@@ -94,39 +229,105 @@ public class FikaDynamicAIManager : MonoBehaviour
             return;
         }
 
-        if (botOwner.IsRole(WildSpawnType.exUsec))
+        // Check if this bot type should be affected by Dynamic AI
+        if (!ShouldTrackBot(botOwner))
         {
             return;
-        }
-
-        if (botOwner.IsRole(WildSpawnType.shooterBTR))
-        {
-            return;
-        }
-
-        if (FikaDynamicAI_Plugin.DynamicAIIgnoreSnipers.Value)
-        {
-            if (botOwner.IsRole(WildSpawnType.marksman))
-            {
-                return;
-            }
         }
 
         _bots.Add((FikaBot)botOwner.GetPlayer);
     }
 
-    protected void Update()
+    /// <summary>
+    /// Determines if a bot should be tracked and affected by Dynamic AI based on its role and config settings.
+    /// </summary>
+    private bool ShouldTrackBot(BotOwner botOwner)
     {
-        _frameCounter++;
+        WildSpawnType role = botOwner.Profile.Info.Settings.Role;
 
-        if (_frameCounter % _resetCounter == 0)
+        // BTR shooter is never affected - would break BTR mechanics
+        if (role == WildSpawnType.shooterBTR)
         {
-            _frameCounter = 0;
-            foreach (var bot in _bots)
-            {
-                CheckForPlayers(bot);
-            }
+            return false;
         }
+
+        return role switch
+        {
+            // Regular Scavs
+            WildSpawnType.assault or
+            WildSpawnType.cursedAssault or
+            WildSpawnType.assaultGroup => FikaDynamicAI_Plugin.AffectScavs.Value,
+
+            // Sniper Scavs
+            WildSpawnType.marksman => FikaDynamicAI_Plugin.AffectSnipers.Value,
+
+            // Rogues (Lighthouse)
+            WildSpawnType.exUsec => FikaDynamicAI_Plugin.AffectRogues.Value,
+
+            // Raiders (Labs, Reserve)
+            WildSpawnType.pmcBot => FikaDynamicAI_Plugin.AffectRaiders.Value,
+
+            // PMCs
+            WildSpawnType.pmcUSEC or
+            WildSpawnType.pmcBEAR => FikaDynamicAI_Plugin.AffectPMCs.Value,
+
+            // Cultists
+            WildSpawnType.sectantPriest or
+            WildSpawnType.sectantWarrior => FikaDynamicAI_Plugin.AffectCultists.Value,
+
+            // Bosses
+            WildSpawnType.bossKnight or
+            WildSpawnType.bossBully or
+            WildSpawnType.bossKilla or
+            WildSpawnType.bossKojaniy or
+            WildSpawnType.bossSanitar or
+            WildSpawnType.bossTagilla or
+            WildSpawnType.bossGluhar or
+            WildSpawnType.bossZryachiy or
+            WildSpawnType.bossKolontay or
+            WildSpawnType.bossPartisan or
+            WildSpawnType.bossBoar or
+            WildSpawnType.bossBoarSniper => FikaDynamicAI_Plugin.AffectBosses.Value,
+
+            // Boss followers/guards
+            WildSpawnType.followerBully or
+            WildSpawnType.followerKojaniy or
+            WildSpawnType.followerSanitar or
+            WildSpawnType.followerTagilla or
+            WildSpawnType.followerGluharAssault or
+            WildSpawnType.followerGluharScout or
+            WildSpawnType.followerGluharSecurity or
+            WildSpawnType.followerGluharSnipe or
+            WildSpawnType.followerBigPipe or
+            WildSpawnType.followerBirdEye or
+            WildSpawnType.followerZryachiy or
+            WildSpawnType.followerBoar or
+            WildSpawnType.followerBoarClose1 or
+            WildSpawnType.followerBoarClose2 or
+            WildSpawnType.followerKolontayAssault or
+            WildSpawnType.followerKolontaySecurity => FikaDynamicAI_Plugin.AffectFollowers.Value,
+
+            // Default: track anything else
+            _ => true
+        };
+    }
+
+    private bool IsMapEnabled()
+    {
+        // Use cached config if available, otherwise default to true for modded maps
+        return _currentMapEnabledConfig?.Value ?? true;
+    }
+
+    private float GetRangeForCurrentMap()
+    {
+        // If map specific distances are disabled, return the global range
+        if (!FikaDynamicAI_Plugin.UseMapSpecificDistances.Value)
+        {
+            return FikaDynamicAI_Plugin.DynamicAIRange.Value;
+        }
+
+        // Use cached config if available, otherwise default to global fallback
+        return _currentMapRangeConfig?.Value ?? FikaDynamicAI_Plugin.DynamicAIRange.Value;
     }
 
     public void AddHumans()
@@ -204,34 +405,53 @@ public class FikaDynamicAIManager : MonoBehaviour
         _disabledBots.Remove(bot);
     }
 
-    private void CheckForPlayers(FikaBot bot)
+    private void Spawner_OnBotRemoved(BotOwner botOwner)
+    {
+        FikaBot bot = (FikaBot)botOwner.GetPlayer;
+        if (!_bots.Remove(bot))
+        {
+             // Log warning only if verified bot exists... 
+             // actually standard remove is fine.
+        }
+        
+        // Clean up tracker
+        _botNextCheckTime.Remove(bot.Id);
+
+        if (_disabledBots.Contains(bot))
+        {
+            _disabledBots.Remove(bot);
+        }
+    }
+    
+    // Returns the closest distance squared to a human player
+    private float CheckForPlayers(FikaBot bot, float rangeSqr)
     {
         // Do not run on bots that have no initialized yet
         if (bot.AIData.BotOwner.BotState != EBotState.Active)
         {
-            return;
+            return 0f;
         }
 
         int notInRange = 0;
-        float range = FikaDynamicAI_Plugin.DynamicAIRange.Value;
+        // Start with a very large distance
+        float minDistanceSqr = float.MaxValue;
 
         foreach (var humanPlayer in _humanPlayers)
         {
-            if (humanPlayer == null)
+            if (humanPlayer == null || !humanPlayer.HealthController.IsAlive)
             {
                 notInRange++;
                 continue;
             }
 
-            if (!humanPlayer.HealthController.IsAlive)
+            float distanceSqr = Vector3.SqrMagnitude(bot.Position - humanPlayer.Position);
+            
+            if (distanceSqr < minDistanceSqr)
             {
-                notInRange++;
-                continue;
+                minDistanceSqr = distanceSqr;
             }
 
-            float distance = Vector3.SqrMagnitude(bot.Position - humanPlayer.Position);
-
-            if (distance > range * range)
+            if (distanceSqr > rangeSqr)
             {
                 notInRange++;
             }
@@ -245,7 +465,11 @@ public class FikaDynamicAIManager : MonoBehaviour
         {
             ActivateBot(bot);
         }
+        
+        return minDistanceSqr;
     }
+
+
 
     public void EnabledChange(bool value)
     {
@@ -261,14 +485,66 @@ public class FikaDynamicAIManager : MonoBehaviour
         }
     }
 
+    internal void RefreshBotTracking()
+    {
+        IBotGame botGame = Singleton<IBotGame>.Instance;
+        if (botGame?.BotsController?.Bots?.BotOwners == null)
+        {
+            return;
+        }
+
+        // Iterate over all bots currently in the game
+        // We iterate backwards or use a copy if we were modifying the source collection, 
+        // but here we modify our local _bots list, so iterating the source is fine.
+        foreach (var botOwner in botGame.BotsController.Bots.BotOwners)
+        {
+            if (botOwner == null || botOwner.IsYourPlayer || !botOwner.IsAI)
+            {
+                continue;
+            }
+
+            FikaBot fikaBot = botOwner.GetPlayer as FikaBot;
+            if (fikaBot == null)
+            {
+                continue;
+            }
+
+            bool shouldTrack = ShouldTrackBot(botOwner);
+            bool isTracked = _bots.Contains(fikaBot);
+
+            if (shouldTrack && !isTracked)
+            {
+                // New bot type enabled - Start tracking it
+                _bots.Add(fikaBot);
+#if DEBUG
+                _logger.LogWarning($"[Refresh] Started tracking {fikaBot.name} ({botOwner.Profile.Info.Settings.Role})");
+#endif
+            }
+            else if (!shouldTrack && isTracked)
+            {
+                // Bot type disabled - Stop tracking it
+                if (_disabledBots.Contains(fikaBot))
+                {
+                    ActivateBot(fikaBot);
+                }
+                _bots.Remove(fikaBot);
+#if DEBUG
+                _logger.LogWarning($"[Refresh] Stopped tracking {fikaBot.name} ({botOwner.Profile.Info.Settings.Role})");
+#endif
+            }
+        }
+    }
+
     internal void RateChanged(FikaDynamicAI_Plugin.EDynamicAIRates value)
     {
-        _resetCounter = value switch
+        // Low rate = Higher multiplier (Less frequent checks)
+        // High rate = Lower multiplier (More frequent checks)
+        _rateMultiplier = value switch
         {
-            FikaDynamicAI_Plugin.EDynamicAIRates.Low => 600,
-            FikaDynamicAI_Plugin.EDynamicAIRates.Medium => 300,
-            FikaDynamicAI_Plugin.EDynamicAIRates.High => 120,
-            _ => 300,
+            FikaDynamicAI_Plugin.EDynamicAIRates.Low => 1.5f,
+            FikaDynamicAI_Plugin.EDynamicAIRates.Medium => 1.0f,
+            FikaDynamicAI_Plugin.EDynamicAIRates.High => 0.5f,
+            _ => 1.0f,
         };
     }
 }
