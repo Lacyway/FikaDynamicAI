@@ -12,7 +12,7 @@ internal class BotsController_SetSettings_Postfix : ModulePatch
     protected override MethodBase GetTargetMethod()
     {
         return typeof(BotsController)
-            .GetMethod(nameof(BotsController.SetSettings));
+            .GetMethod(nameof(BotsController.Init));
     }
 
     [PatchPostfix]
