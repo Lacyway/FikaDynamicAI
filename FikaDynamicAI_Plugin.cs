@@ -7,7 +7,7 @@ using System;
 
 namespace FikaDynamicAI;
 
-[BepInPlugin("com.lacyway.fda", "FikaDynamicAI", "1.0.0")]
+[BepInPlugin("com.lacyway.fda", "FikaDynamicAI", "1.0.1")]
 [BepInDependency("com.fika.core", BepInDependency.DependencyFlags.HardDependency)]
 internal class FikaDynamicAI_Plugin : BaseUnityPlugin
 {
